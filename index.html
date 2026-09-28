@@ -104,6 +104,8 @@
   .formtype button{flex:1 1 auto; min-width:120px;}
   .formtype button.active{background:var(--ink); color:var(--bg); border-color:var(--ink);}
   .hide{display:none !important;}
+  .backup{margin-top:28px; padding-top:18px; border-top:1px solid var(--border);}
+  .backup-title{font-family:system-ui,-apple-system,sans-serif; font-size:.8rem; color:var(--muted); margin-bottom:2px;}
   .modal-overlay{
     position:fixed; inset:0; background:rgba(20,20,20,.45); display:flex;
     align-items:center; justify-content:center; padding:20px; z-index:50;
@@ -277,6 +279,16 @@
   </form>
 
   <div id="list"></div>
+
+  <div class="backup">
+    <div class="backup-title">Yedekleme</div>
+    <div class="actions">
+      <button type="button" id="btnExport">Yedek al (dışa aktar)</button>
+      <button type="button" class="ghost" id="btnImport">Yedekten yükle</button>
+    </div>
+    <input type="file" id="importFile" accept=".json,application/json" class="hide">
+    <div id="backupMsg" class="meta"></div>
+  </div>
 </div>
 
 <script>
@@ -726,6 +738,48 @@ document.getElementById("loanForm").addEventListener("submit", (e)=>{
   e.target.reset();
   e.target.style.display = "none";
   render();
+});
+
+function backupMsg(t, isErr){
+  const el = document.getElementById("backupMsg");
+  el.textContent = t;
+  el.style.color = isErr ? "var(--danger)" : "var(--ok)";
+}
+document.getElementById("btnExport").addEventListener("click", ()=>{
+  try{
+    const data = { uygulama:"kredi-cari-takip", surum:1, tarih:new Date().toISOString(), kayitlar:loadItems(), gecmis:loadHistory() };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type:"application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "kredi-cari-yedek-" + isoDate(new Date()) + ".json";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 1000);
+    backupMsg("Yedek dosyası indirildi (" + data.kayitlar.length + " kayıt).");
+  }catch(e){ backupMsg("Yedek alınamadı.", true); }
+});
+document.getElementById("btnImport").addEventListener("click", ()=>document.getElementById("importFile").click());
+document.getElementById("importFile").addEventListener("change", (e)=>{
+  const f = e.target.files[0];
+  if (!f) return;
+  const r = new FileReader();
+  r.onload = ()=>{
+    try{
+      const d = JSON.parse(r.result);
+      if (!d || !Array.isArray(d.kayitlar)) throw new Error("format");
+      const items = loadItems();
+      const ids = new Set(items.map(x=>x.id));
+      let added = 0;
+      d.kayitlar.forEach(it=>{ if (it && it.id && !ids.has(it.id)){ items.push(it); ids.add(it.id); added++; } });
+      const hist = loadHistory();
+      const seen = new Set(hist.map(h=>JSON.stringify(h)));
+      (Array.isArray(d.gecmis) ? d.gecmis : []).forEach(h=>{ const k = JSON.stringify(h); if (!seen.has(k)){ hist.push(h); seen.add(k); } });
+      saveItems(items); saveHistory(hist); render();
+      backupMsg(added + " yeni kayıt yüklendi.");
+    }catch(err){ backupMsg("Bu dosya geçerli bir yedek değil.", true); }
+    e.target.value = "";
+  };
+  r.readAsText(f);
 });
 
 render();
