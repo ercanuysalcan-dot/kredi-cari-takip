@@ -110,6 +110,16 @@
   .hide{display:none !important;}
   .backup{margin-top:28px; padding-top:18px; border-top:1px solid var(--border);}
   .backup-title{font-family:system-ui,-apple-system,sans-serif; font-size:.8rem; color:var(--muted); margin-bottom:2px;}
+  .notify-card{
+    background:var(--warn-soft); border:1px solid var(--warn); border-radius:8px;
+    padding:16px; margin-bottom:18px; font-family:system-ui,-apple-system,sans-serif;
+  }
+  .notify-card h2{font-size:.95rem; margin:0 0 6px; color:var(--ink); font-family:ui-serif,Georgia,serif;}
+  .notify-card p{font-size:.85rem; color:var(--muted); margin:0 0 10px; line-height:1.5;}
+  .notify-ok{font-size:.85rem; color:var(--ok); font-weight:600; margin-bottom:10px;}
+  .notify-times{display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:10px;}
+  .notify-times label{display:block; font-size:.72rem; color:var(--muted); margin-bottom:4px;}
+  .notify-times input{width:100%; font-family:system-ui,-apple-system,sans-serif; font-size:.9rem; padding:7px 8px; border-radius:6px; border:1px solid var(--border); background:var(--surface); color:var(--ink);}
   .modal-overlay{
     position:fixed; inset:0; background:rgba(20,20,20,.45); display:flex;
     align-items:center; justify-content:center; padding:20px; z-index:50;
@@ -135,6 +145,11 @@
 <div class="wrap">
   <h1>Kredi &amp; Cari Takip</h1>
   <p class="sub">Banka kredisi taksitlerini, ev kirası gibi kendi düzenli ödemelerini ve arkadaşlarınla aranızdaki borç/alacakları tek yerden takip et.</p>
+
+  <div id="notifyCard" class="notify-card hide">
+    <h2>Bildirimler</h2>
+    <div id="notifyBody"></div>
+  </div>
 
   <div id="banner"></div>
 
@@ -440,8 +455,6 @@ function renderOzet(list){
 }
 
 function markStartingPoint(item, today){
-  // When a recurring payment is first added, don't flag the cycle that
-  // already passed before tracking started — start reminders from the next one.
   const info = krediCycleInfo(item, today);
   if (info.status !== "upcoming"){
     item.sonOdenenDonem = info.currentPeriod;
@@ -450,22 +463,8 @@ function markStartingPoint(item, today){
   return item;
 }
 
-function render(){
-  const items = loadItems();
-  const today = new Date(); today.setHours(0,0,0,0);
-  const list = document.getElementById("list");
-  const banner = document.getElementById("banner");
+function computeDue(items, today){
   const due = [];
-  list.innerHTML = "";
-
-  const visible = items.filter(it => activeFilter==="hepsi" || it.tur===activeFilter);
-
-  if (activeFilter === "ozet"){
-    renderOzet(list);
-  } else if (visible.length === 0){
-    list.innerHTML = '<div class="empty">Bu görünümde kayıt yok. Yukarıdan yeni bir kayıt ekle.</div>';
-  }
-
   items.forEach(item => {
     let info, isDueType = true;
     if (item.tur === "kredi" || item.tur === "odeme") info = krediCycleInfo(item, today);
@@ -493,9 +492,36 @@ function render(){
       }
       due.push({ mesaj, tutar, status: info.status });
     }
+  });
+  return due;
+}
+
+function render(){
+  const items = loadItems();
+  const today = new Date(); today.setHours(0,0,0,0);
+  const list = document.getElementById("list");
+  const banner = document.getElementById("banner");
+  const due = computeDue(items, today);
+  list.innerHTML = "";
+
+  const visible = items.filter(it => activeFilter==="hepsi" || it.tur===activeFilter);
+
+  if (activeFilter === "ozet"){
+    renderOzet(list);
+  } else if (visible.length === 0){
+    list.innerHTML = '<div class="empty">Bu görünümde kayıt yok. Yukarıdan yeni bir kayıt ekle.</div>';
+  }
+
+  items.forEach(item => {
+    let info, isDueType = true;
+    if (item.tur === "kredi" || item.tur === "odeme") info = krediCycleInfo(item, today);
+    else if (item.tur === "ekhesap") info = ekHesapInfo(item, today);
+    else if (item.tur === "cari") info = cariInfo(item, today);
+    else isDueType = false;
 
     if (activeFilter === "ozet") return;
     if (!(activeFilter==="hepsi" || item.tur===activeFilter)) return;
+    if (!isDueType) return;
 
     const card = document.createElement("div");
     card.className = "card";
@@ -786,7 +812,99 @@ document.getElementById("importFile").addEventListener("change", (e)=>{
   r.readAsText(f);
 });
 
+const NOTIFY_TIMES_KEY = "cari-notify-times-v1";
+const NOTIFIED_LOG_KEY = "cari-notified-log-v1";
+
+function loadNotifyTimes(){
+  try{ const raw = localStorage.getItem(NOTIFY_TIMES_KEY); return raw ? JSON.parse(raw) : ["09:00","14:00","19:00"]; }
+  catch(e){ return ["09:00","14:00","19:00"]; }
+}
+function saveNotifyTimes(times){ try{ localStorage.setItem(NOTIFY_TIMES_KEY, JSON.stringify(times)); }catch(e){} }
+function loadNotifiedLog(){
+  try{ const raw = localStorage.getItem(NOTIFIED_LOG_KEY); return raw ? JSON.parse(raw) : {}; }
+  catch(e){ return {}; }
+}
+function saveNotifiedLog(log){
+  const keys = Object.keys(log);
+  if (keys.length > 60){ keys.sort().slice(0, keys.length-60).forEach(k=>delete log[k]); }
+  try{ localStorage.setItem(NOTIFIED_LOG_KEY, JSON.stringify(log)); }catch(e){}
+}
+
+function renderNotifyPanel(){
+  const card = document.getElementById("notifyCard");
+  const body = document.getElementById("notifyBody");
+  if (!("Notification" in window)){ card.classList.add("hide"); return; }
+  card.classList.remove("hide");
+
+  if (Notification.permission === "granted"){
+    const times = loadNotifyTimes();
+    body.innerHTML = `
+      <div class="notify-ok">✓ Bildirimler açık</div>
+      <p>Bugün ödeme günü olan ya da gecikmiş bir kaydın varsa, bu saatlerde (sekme açıkken) bildirim gönderilir.</p>
+      <div class="notify-times">
+        <div><label>1. saat</label><input type="time" id="nTime0" value="${times[0]||''}"></div>
+        <div><label>2. saat</label><input type="time" id="nTime1" value="${times[1]||''}"></div>
+        <div><label>3. saat</label><input type="time" id="nTime2" value="${times[2]||''}"></div>
+      </div>
+      <button type="button" id="btnSaveTimes">Saatleri kaydet</button>
+    `;
+    document.getElementById("btnSaveTimes").addEventListener("click", ()=>{
+      const t = [0,1,2].map(i=>document.getElementById("nTime"+i).value).filter(Boolean);
+      saveNotifyTimes(t);
+      checkReminders(true);
+    });
+  } else if (Notification.permission === "denied"){
+    body.innerHTML = `<p>Bildirimlere izin verilmemiş. Tarayıcı site ayarlarından izni açıp sayfayı yenile.</p>`;
+  } else {
+    body.innerHTML = `
+      <p>Ödeme günü geldiğinde (sekme açıkken) bildirim almak için izin ver.</p>
+      <button type="button" id="btnAskPerm">Bildirimlere izin ver</button>
+    `;
+    document.getElementById("btnAskPerm").addEventListener("click", ()=>{
+      Notification.requestPermission().then(()=>{ renderNotifyPanel(); checkReminders(true); });
+    });
+  }
+}
+
+function fireNotification(title, body){
+  const opts = { body, icon:"icon-192.png", badge:"icon-192.png", vibrate:[200,100,200] };
+  if ("serviceWorker" in navigator){
+    navigator.serviceWorker.ready.then(reg=>reg.showNotification(title, opts)).catch(()=>{
+      try{ new Notification(title, opts); }catch(e){}
+    });
+  } else {
+    try{ new Notification(title, opts); }catch(e){}
+  }
+}
+
+function checkReminders(force){
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
+  const now = new Date();
+  const hhmm = String(now.getHours()).padStart(2,"0")+":"+String(now.getMinutes()).padStart(2,"0");
+  const times = loadNotifyTimes();
+  if (!force && !times.includes(hhmm)) return;
+
+  const today = new Date(); today.setHours(0,0,0,0);
+  const due = computeDue(loadItems(), today);
+  if (due.length === 0) return;
+
+  const log = loadNotifiedLog();
+  const slotKey = isoDate(today) + "|" + (force ? "manuel-"+hhmm : hhmm);
+  if (log[slotKey]) return;
+  log[slotKey] = true;
+  saveNotifiedLog(log);
+
+  const title = due.length===1 ? "💰 Ödeme hatırlatması" : `💰 ${due.length} ödeme hatırlatması`;
+  const body = due.map(d=>d.mesaj.replace(/^Bugün /,"") + " — " + fmtMoney(d.tutar)).join("\n");
+  fireNotification(title, body);
+}
+
 render();
+renderNotifyPanel();
+setInterval(()=>checkReminders(false), 30000);
+document.addEventListener("visibilitychange", ()=>{
+  if (document.visibilityState === "visible") checkReminders(false);
+});
 
 try{
   if ("serviceWorker" in navigator){
