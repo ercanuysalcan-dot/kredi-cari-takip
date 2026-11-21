@@ -301,7 +301,7 @@
 
   <div class="backup">
     <div class="backup-title">Telefon takvimine hatırlatma</div>
-    <div class="meta" style="display:block; margin-top:2px;">Aylık ödemelerin ve vadeli kayıtların takvime eklenir. Telefon, uygulama kapalıyken bile bir gün önce ve o gün sabah 09:00'da çalar.</div>
+    <div class="meta" style="display:block; margin-top:2px;">Aylık ödemelerin ve vadeli kayıtların takvime eklenir. Telefon, uygulama kapalıyken bile ödeme günü 09:00, 11:00 ve 13:00'te çalar.</div>
     <div class="actions">
       <button type="button" id="btnCal">Takvime aktar (.ics)</button>
     </div>
@@ -852,10 +852,10 @@ function buildIcs(items, today){
   let count = 0;
   function addEvent(uid, date, summary, desc, rrule){
     lines.push("BEGIN:VEVENT","UID:"+uid,"DTSTAMP:"+stamp,
-      "DTSTART:"+icsDate(date)+"T090000","DTEND:"+icsDate(date)+"T093000",
+      "DTSTART:"+icsDate(date)+"T090000","DTEND:"+icsDate(date)+"T133000",
       "SUMMARY:"+icsEsc(summary),"DESCRIPTION:"+icsEsc(desc));
     if (rrule) lines.push("RRULE:"+rrule);
-    ["-P1D","PT0S"].forEach(t=>{
+    ["PT0S","PT2H","PT4H"].forEach(t=>{
       lines.push("BEGIN:VALARM","ACTION:DISPLAY","DESCRIPTION:"+icsEsc(summary),"TRIGGER:"+t,"END:VALARM");
     });
     lines.push("END:VEVENT");
