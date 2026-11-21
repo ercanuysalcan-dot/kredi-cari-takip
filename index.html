@@ -300,6 +300,15 @@
   <div id="list"></div>
 
   <div class="backup">
+    <div class="backup-title">Telefon takvimine hatırlatma</div>
+    <div class="meta" style="display:block; margin-top:2px;">Aylık ödemelerin ve vadeli kayıtların takvime eklenir. Telefon, uygulama kapalıyken bile bir gün önce ve o gün sabah 09:00'da çalar.</div>
+    <div class="actions">
+      <button type="button" id="btnCal">Takvime aktar (.ics)</button>
+    </div>
+    <div id="calMsg" class="meta"></div>
+  </div>
+
+  <div class="backup">
     <div class="backup-title">Yedekleme</div>
     <div class="actions">
       <button type="button" id="btnExport">Yedek al (dışa aktar)</button>
@@ -455,6 +464,8 @@ function renderOzet(list){
 }
 
 function markStartingPoint(item, today){
+  // When a recurring payment is first added, don't flag the cycle that
+  // already passed before tracking started — start reminders from the next one.
   const info = krediCycleInfo(item, today);
   if (info.status !== "upcoming"){
     item.sonOdenenDonem = info.currentPeriod;
@@ -810,6 +821,105 @@ document.getElementById("importFile").addEventListener("change", (e)=>{
     e.target.value = "";
   };
   r.readAsText(f);
+});
+
+function icsEsc(s){
+  return String(s==null ? "" : s).replace(/\\/g,"\\\\").replace(/;/g,"\\;").replace(/,/g,"\\,").replace(/\r?\n/g,"\\n");
+}
+function icsFold(line){
+  const enc = new TextEncoder();
+  let out = "", cur = "", bytes = 0, limit = 70;
+  for (const ch of line){
+    const b = enc.encode(ch).length;
+    if (bytes + b > limit){ out += cur + "\r\n "; cur = ""; bytes = 0; limit = 69; }
+    cur += ch; bytes += b;
+  }
+  return out + cur;
+}
+function icsDate(d){ return isoDate(d).replace(/-/g,""); }
+function icsNextDue(gun, today){
+  const y = today.getFullYear(), m = today.getMonth();
+  let c = new Date(y, m, Math.min(gun, daysInMonth(y,m)));
+  if (c < today){
+    const ny = m===11 ? y+1 : y, nm = m===11 ? 0 : m+1;
+    c = new Date(ny, nm, Math.min(gun, daysInMonth(ny,nm)));
+  }
+  return c;
+}
+function buildIcs(items, today){
+  const stamp = new Date().toISOString().replace(/[-:]/g,"").replace(/\.\d{3}/,"");
+  const lines = ["BEGIN:VCALENDAR","VERSION:2.0","PRODID:-//kredi-cari-takip//TR","CALSCALE:GREGORIAN","METHOD:PUBLISH","X-WR-CALNAME:Ödeme hatırlatmaları"];
+  let count = 0;
+  function addEvent(uid, date, summary, desc, rrule){
+    lines.push("BEGIN:VEVENT","UID:"+uid,"DTSTAMP:"+stamp,
+      "DTSTART:"+icsDate(date)+"T090000","DTEND:"+icsDate(date)+"T093000",
+      "SUMMARY:"+icsEsc(summary),"DESCRIPTION:"+icsEsc(desc));
+    if (rrule) lines.push("RRULE:"+rrule);
+    ["-P1D","PT0S"].forEach(t=>{
+      lines.push("BEGIN:VALARM","ACTION:DISPLAY","DESCRIPTION:"+icsEsc(summary),"TRIGGER:"+t,"END:VALARM");
+    });
+    lines.push("END:VEVENT");
+    count++;
+  }
+  items.forEach(it=>{
+    if (it.tur === "kredi" || it.tur === "odeme"){
+      const name = it.tur === "kredi" ? it.banka : it.ad;
+      const summary = "Ödeme: " + name + (it.degisken ? "" : " — " + fmtMoney(it.tutar));
+      const desc = (it.degisken ? "Tutar her ay değişir, güncel tutar için uygulamaya bak." : "Aylık sabit ödeme.") + (it.aciklama ? " " + it.aciklama : "");
+      const info = krediCycleInfo(it, today);
+      const start = info.paid ? info.nextDue : icsNextDue(it.gun, today);
+      if (it.gun <= 28){
+        addEvent(it.id + "@kredi-cari-takip", start, summary, desc, "FREQ=MONTHLY;BYMONTHDAY=" + it.gun);
+      } else {
+        for (let k = 0; k < 12; k++){
+          const y = start.getFullYear() + Math.floor((start.getMonth() + k) / 12);
+          const m = (start.getMonth() + k) % 12;
+          const d = new Date(y, m, Math.min(it.gun, daysInMonth(y, m)));
+          addEvent(it.id + "-" + k + "@kredi-cari-takip", d, summary, desc, null);
+        }
+      }
+    } else if (it.tur === "ekhesap" && !it.odendiMi && it.odemeTarihi){
+      const vade = new Date(it.odemeTarihi + "T00:00:00");
+      if (vade >= today){
+        const info = ekHesapInfo(it, today);
+        const ad = it.ekAd || "Ek Hesap";
+        addEvent(it.id + "@kredi-cari-takip", vade, "Ek hesap ödemesi: " + ad + " — " + fmtMoney(info.toplam),
+          "Anapara " + fmtMoney(it.tutar) + "; faiz ve BSMV/KKDF dahil toplam tutar.", null);
+      }
+    } else if (it.tur === "cari" && !it.odendiMi && it.tarih){
+      const d = new Date(it.tarih + "T00:00:00");
+      if (d >= today){
+        const verb = it.yon === "borcAldim" ? "Ödeme" : "Tahsilat";
+        addEvent(it.id + "@kredi-cari-takip", d, verb + ": " + it.kisi + " — " + fmtMoney(it.tutar), it.aciklama || "", null);
+      }
+    }
+  });
+  lines.push("END:VCALENDAR");
+  return { text: lines.map(icsFold).join("\r\n") + "\r\n", count };
+}
+document.getElementById("btnCal").addEventListener("click", ()=>{
+  const el = document.getElementById("calMsg");
+  try{
+    const today = new Date(); today.setHours(0,0,0,0);
+    const r = buildIcs(loadItems(), today);
+    if (r.count === 0){
+      el.textContent = "Takvime eklenecek kayıt yok.";
+      el.style.color = "var(--muted)";
+      return;
+    }
+    const blob = new Blob([r.text], { type:"text/calendar;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "odeme-hatirlatma.ics";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 1000);
+    el.textContent = r.count + " etkinlik hazırlandı. İndirilenler'den dosyayı açıp takvim uygulamasında ekle.";
+    el.style.color = "var(--ok)";
+  }catch(e){
+    el.textContent = "Takvim dosyası oluşturulamadı.";
+    el.style.color = "var(--danger)";
+  }
 });
 
 const NOTIFY_TIMES_KEY = "cari-notify-times-v1";
